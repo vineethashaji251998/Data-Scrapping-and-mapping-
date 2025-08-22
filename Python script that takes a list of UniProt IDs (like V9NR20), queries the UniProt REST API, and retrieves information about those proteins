@@ -1,0 +1,57 @@
+import requests
+import pandas as pd
+import time
+import os
+
+folder = r"D:\Vineetha\Vineetha\VINEETHA_PHD\MPOX\MPOX_HuPoxNET"
+input_file = os.path.join(folder, "ID.xlsx")
+output_file = os.path.join(folder, "Genbank_to_UniProt.xlsx")
+
+API_URL = "https://rest.uniprot.org/uniprotkb/search"
+FIELDS = "accession,id,protein_name,gene_names,organism_name,length"
+
+def fetch_uniprot(genbank_id):
+    params = {
+        "query": genbank_id,
+        "format": "tsv",
+        "fields": FIELDS
+    }
+    response = requests.get(API_URL, params=params)
+    response.raise_for_status()
+    lines = response.text.strip().split("\n")
+    if len(lines) < 2:
+        return None
+    values = lines[1].split("\t")
+    return {
+        "Genbank_ID": genbank_id,
+        "Entry": values[0],
+        "Entry_Name": values[1],
+        "Protein_Names": values[2],
+        "Gene_Names": values[3],
+        "Organism": values[4],
+        "Length": values[5],
+    }
+
+if __name__ == "__main__":
+    df = pd.read_excel(input_file)
+    genbank_ids = df.iloc[:, 0].dropna().astype(str).tolist()
+
+    results = []
+    for idx, genbank_id in enumerate(genbank_ids, start=1):
+        print(f"[{idx}/{len(genbank_ids)}] Fetching UniProt data for {genbank_id}...")
+        try:
+            data = fetch_uniprot(genbank_id)
+            if data:
+                results.append(data)
+            else:
+                print(f"⚠️ No UniProt match found for {genbank_id}")
+        except Exception as e:
+            print(f"❌ Error fetching {genbank_id}: {e}")
+        time.sleep(5)
+
+    if results:
+        out_df = pd.DataFrame(results)
+        out_df.to_excel(output_file, index=False)
+        print(f"\n✅ Data saved to:\n   {output_file}")
+    else:
+        print("❌ No results found.")
