@@ -1,0 +1,120 @@
+import time
+import pandas as pd
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait, Select
+from selenium.webdriver.support import expected_conditions as EC
+from bs4 import BeautifulSoup
+
+options = webdriver.ChromeOptions()
+driver = webdriver.Chrome(options=options)
+
+url = "https://kaabil.net/hupoxnet/interactome"
+driver.get(url)
+
+WebDriverWait(driver, 20).until(
+    EC.presence_of_element_located((By.CLASS_NAME, "form-select"))
+)
+dropdown = driver.find_element(By.CLASS_NAME, "form-select")
+select = Select(dropdown)
+
+strains = [(opt.get_attribute("value"), opt.text.strip()) for opt in select.options if opt.get_attribute("value")]
+
+databases = ["HPIDB", "DIP", "MINT", "BioGRID", "IntAct", "VirHostNet"]
+
+all_data = []
+
+for strain_value, strain_name in strains:
+    print(f"\n🔎 Processing strain: {strain_name} ({strain_value})")
+    select.select_by_value(strain_value)
+    
+    for db in databases:
+        print(f"➡️ Fetching data for database: {db}")
+        
+        try:
+            checkboxes = WebDriverWait(driver, 15).until(
+                EC.presence_of_all_elements_located((By.CSS_SELECTOR, ".ant-checkbox-group .ant-checkbox-input"))
+            )
+            for cb in checkboxes:
+                if cb.is_selected():
+                    driver.execute_script("arguments[0].click();", cb)
+        except Exception as e:
+            print(f"⚠️ Could not reset checkboxes: {e}")
+        
+        try:
+            db_checkbox = driver.find_element(By.XPATH, f"//span[text()='{db}']/preceding-sibling::span/input")
+            if not db_checkbox.is_selected():
+                driver.execute_script("arguments[0].click();", db_checkbox)
+            print(f"✔️ Selected {db} checkbox")
+        except Exception as e:
+            print(f"⚠️ Could not select {db}: {e}")
+            continue
+        
+        try:
+            driver.find_element(By.XPATH, "//button[span[text()='Show Interactions ']]").click()
+        except Exception as e:
+            print(f"⚠️ Could not click 'Show Interactions': {e}")
+            continue
+        
+        print("⏳ Waiting 60 seconds for data to load...")
+        time.sleep(60)
+        
+        while True:
+            try:
+                WebDriverWait(driver, 20).until(
+                    EC.presence_of_element_located((By.CLASS_NAME, "table-responsive"))
+                )
+                soup = BeautifulSoup(driver.page_source, "html.parser")
+                table_div = soup.find("div", {"class": "table-responsive"})
+                if not table_div:
+                    print(f"⚠️ No table found for {db} in strain {strain_name}")
+                    break
+                
+                table = table_div.find("table")
+                headers = [th.get_text(strip=True) for th in table.find("thead").find_all("th")]
+                rows = []
+                
+                for tr in table.find("tbody").find_all("tr"):
+                    row_data = []
+                    for td in tr.find_all("td"):
+                        if td.find("a"):
+                            row_data.append(td.find("a").get_text(strip=True))
+                        elif td.find("button"):
+                            row_data.append(td.find("button").get_text(strip=True))
+                        else:
+                            row_data.append(td.get_text(strip=True))
+                    rows.append(row_data)
+                
+                if rows:
+                    df = pd.DataFrame(rows, columns=headers)
+                    df["Pathogen Strain"] = strain_name
+                    df["Database"] = db
+                    all_data.append(df)
+                
+                try:
+                    next_btn = driver.find_element(By.XPATH, "//li[@class='next']/a")
+                    if "disabled" in next_btn.get_attribute("aria-disabled"):
+                        break
+                    driver.execute_script("arguments[0].click();", next_btn)
+                    print("➡️ Moving to next page...")
+                    time.sleep(5)
+                except:
+                    break
+            except Exception as e:
+                print(f"⚠️ Error scraping page: {e}")
+                break
+        
+        driver.get(url)
+        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CLASS_NAME, "form-select")))
+        dropdown = driver.find_element(By.CLASS_NAME, "form-select")
+        select = Select(dropdown)
+        select.select_by_value(strain_value)
+
+if all_data:
+    final_df = pd.concat(all_data, ignore_index=True)
+    final_df.to_excel("hupoxnet_strains_all_databases.xlsx", index=False)
+    print("\n✅ Done! Data saved to hupoxnet_strains_all_databases.xlsx")
+else:
+    print("\n⚠️ No data scraped.")
+
+driver.quit()
