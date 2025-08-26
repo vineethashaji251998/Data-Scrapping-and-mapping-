@@ -1,0 +1,107 @@
+import requests
+import pandas as pd
+import time
+import os
+
+# -----------------------------
+# File paths
+# -----------------------------
+folder = r"D:\Vineetha\Vineetha\VINEETHA_PHD\MPOX\PHOSPHO_DATA\Virus_phospho_31052025"
+input_file = os.path.join(folder, "Mpox_Uniparc_IDs.xlsx")
+output_file = os.path.join(folder, "Uniparc_to_UniProt.xlsx")
+
+SEARCH_URL = "https://rest.uniprot.org/uniparc/search"
+ENTRY_URL = "https://rest.uniprot.org/uniparc/"
+
+def get_uniparc_entry(query_id):
+    """Search UniParc to get the UniParc entry (UPIxxxxxx) from URK ID."""
+    params = {"query": query_id, "format": "json", "size": 1}
+    response = requests.get(SEARCH_URL, params=params)
+    
+    if response.status_code != 200:
+        return None
+    data = response.json()
+    if "results" in data and len(data["results"]) > 0:
+        return data["results"][0]["uniParcId"]
+    return None
+
+def fetch_uniprot_from_uniparc(uniparc_id):
+    """Fetch details (taxonomy, length, UniProtKB, first/last seen) for a UniParc ID."""
+    url = f"{ENTRY_URL}{uniparc_id}"
+    response = requests.get(url, headers={"Accept": "application/json"})
+    
+    if response.status_code != 200:
+        return {
+            "UniParc_ID": uniparc_id,
+            "Taxonomy": "Not Found",
+            "Length": "",
+            "UniProtKB": "Not Found",
+            "First_seen": "",
+            "Last_seen": ""
+        }
+    
+    data = response.json()
+
+    # Taxonomy (may be multiple)
+    taxonomies = [tax.get("scientificName", "") for tax in data.get("commonTaxons", [])]
+    taxonomy = "; ".join(taxonomies) if taxonomies else "N/A"
+
+    # Length
+    length = data.get("sequence", {}).get("length", "")
+
+    # UniProtKB IDs
+    uniprot_ids = []
+    for xref in data.get("uniParcCrossReferences", []):
+        if xref.get("database") == "UniProtKB":
+            uniprot_ids.append(xref.get("id"))
+    uniprot_ids_str = ";".join(uniprot_ids) if uniprot_ids else "No mapping"
+
+    # First seen / Last seen
+    first_seen = data.get("firstSeen", "")
+    last_seen = data.get("lastSeen", "")
+
+    return {
+        "UniParc_ID": uniparc_id,
+        "Taxonomy": taxonomy,
+        "Length": length,
+        "UniProtKB": uniprot_ids_str,
+        "First_seen": first_seen,
+        "Last_seen": last_seen
+    }
+
+if __name__ == "__main__":
+    # Read IDs from Excel (first column)
+    df = pd.read_excel(input_file)
+    input_ids = df.iloc[:, 0].dropna().astype(str).tolist()
+
+    results = []
+    for idx, query_id in enumerate(input_ids, start=1):
+        print(f"[{idx}/{len(input_ids)}] Searching for {query_id}...")
+        try:
+            entry = get_uniparc_entry(query_id)
+            if entry:
+                details = fetch_uniprot_from_uniparc(entry)
+                details["Input_ID"] = query_id  # keep original ID
+                results.append(details)
+            else:
+                results.append({
+                    "Input_ID": query_id,
+                    "UniParc_ID": "Not Found",
+                    "Taxonomy": "",
+                    "Length": "",
+                    "UniProtKB": "",
+                    "First_seen": "",
+                    "Last_seen": ""
+                })
+        except Exception as e:
+            print(f"❌ Error with {query_id}: {e}")
+        time.sleep(1)  # polite delay
+
+    # Save results
+    if results:
+        out_df = pd.DataFrame(results)
+        out_df = out_df[["Input_ID", "UniParc_ID", "Taxonomy", "Length", "UniProtKB", "First_seen", "Last_seen"]]
+        out_df.to_excel(output_file, index=False)
+        print(f"\n✅ Data saved to:\n   {output_file}")
+    else:
+        print("❌ No results found.")
